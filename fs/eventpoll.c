@@ -194,20 +194,20 @@ struct eventpoll {
 	wait_queue_head_t poll_wait;
 
 	/* List of ready file descriptors */
-	struct list_head rdllist;
+	struct list_head rdllist; // 存储当前就绪事件，调用epoll_wait的时候返回给用户,避免用户遍历所有socket
 
 	/* Lock which protects rdllist and ovflist */
 	rwlock_t lock;
 
 	/* RB tree root used to store monitored fd structs */
-	struct rb_root_cached rbr;
+	struct rb_root_cached rbr; //这个红黑树里面存了当前关注的fd
 
 	/*
 	 * This is a single linked list that chains all the "struct epitem" that
 	 * happened while transferring ready events to userspace w/out
 	 * holding ->lock.
 	 */
-	struct epitem *ovflist;
+	struct epitem *ovflist; // 在向用户空间传输就绪事件的时候，将同时发生事件的文件描述符链入到这个链表里面
 
 	/* wakeup_source used when ep_scan_ready_list is running */
 	struct wakeup_source *ws;
@@ -1501,16 +1501,16 @@ static int ep_insert(struct eventpoll *ep, const struct epoll_event *event,
 	user_watches = atomic_long_read(&ep->user->epoll_watches);
 	if (unlikely(user_watches >= max_user_watches))
 		return -ENOSPC;
-	if (!(epi = kmem_cache_alloc(epi_cache, GFP_KERNEL)))
+	if (!(epi = kmem_cache_alloc(epi_cache, GFP_KERNEL))) // 初始化 epitem
 		return -ENOMEM;
 
 	/* Item initialization follow here ... */
 	INIT_LIST_HEAD(&epi->rdllink);
 	INIT_LIST_HEAD(&epi->fllink);
 	INIT_LIST_HEAD(&epi->pwqlist);
-	epi->ep = ep;
-	ep_set_ffd(&epi->ffd, tfile, fd);
-	epi->event = *event;
+	epi->ep = ep; // 存下对应的 eventpoll
+	ep_set_ffd(&epi->ffd, tfile, fd); // 设置被监控的事件描述符
+	epi->event = *event; // 保存感兴趣的事件
 	epi->nwait = 0;
 	epi->next = EP_UNACTIVE_PTR;
 	if (epi->event.events & EPOLLWAKEUP) {
@@ -1530,7 +1530,7 @@ static int ep_insert(struct eventpoll *ep, const struct epoll_event *event,
 	 * Add the current item to the RB tree. All RB tree operations are
 	 * protected by "mtx", and ep_insert() is called with "mtx" held.
 	 */
-	ep_rbtree_insert(ep, epi);
+	ep_rbtree_insert(ep, epi); // 加入到红黑树
 
 	/* now check if we've created too many backpaths */
 	error = -EINVAL;
@@ -1804,13 +1804,13 @@ static inline struct timespec64 ep_set_mstimeout(long ms)
  *
  * @ep: Pointer to the eventpoll context.
  * @events: Pointer to the userspace buffer where the ready events should be
- *          stored.
+ *          stored. 用户数据，之前存的回调函数什么的
  * @maxevents: Size (in terms of number of events) of the caller event buffer.
  * @timeout: Maximum timeout for the ready events fetch operation, in
  *           milliseconds. If the @timeout is zero, the function will not block,
  *           while if the @timeout is less than zero, the function will block
  *           until at least one event has been retrieved (or an error
- *           occurred).
+ *           occurred). 负数会一直等到事件发生或者错误发生
  *
  * Returns: Returns the number of ready events which have been fetched, or an
  *          error code, in case of error.
@@ -2051,7 +2051,7 @@ static int do_epoll_create(int flags)
 	/*
 	 * Create the internal data structure ("struct eventpoll").
 	 */
-	error = ep_alloc(&ep);
+	error = ep_alloc(&ep); // 创建eventpoll结构
 	if (error < 0)
 		return error;
 	/*
@@ -2090,7 +2090,7 @@ SYSCALL_DEFINE1(epoll_create, int, size)
 	if (size <= 0)
 		return -EINVAL;
 
-	return do_epoll_create(0);
+	return do_epoll_create(0); // size这个参数其实没用...
 }
 
 static inline int epoll_mutex_lock(struct mutex *mutex, int depth,
@@ -2275,7 +2275,7 @@ SYSCALL_DEFINE4(epoll_ctl, int, epfd, int, op, int, fd,
 	struct epoll_event epds;
 
 	if (ep_op_has_event(op) &&
-	    copy_from_user(&epds, event, sizeof(struct epoll_event)))
+	    copy_from_user(&epds, event, sizeof(struct epoll_event))) // 从用户空间复制到内核
 		return -EFAULT;
 
 	return do_epoll_ctl(epfd, op, fd, &epds, false);
@@ -2317,10 +2317,10 @@ static int do_epoll_wait(int epfd, struct epoll_event __user *events,
 	 * At this point it is safe to assume that the "private_data" contains
 	 * our own data structure.
 	 */
-	ep = f.file->private_data;
+	ep = f.file->private_data; // 获取对应的eventpoll
 
 	/* Time to fish for events ... */
-	error = ep_poll(ep, events, maxevents, timeout);
+	error = ep_poll(ep, events, maxevents, timeout); // 等待事件到来
 
 error_fput:
 	fdput(f);
